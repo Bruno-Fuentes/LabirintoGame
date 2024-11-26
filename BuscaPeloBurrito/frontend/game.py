@@ -1,7 +1,6 @@
 import pygame
 import random
-import requests
-import os
+import sqlite3
 
 # Inicializa o Pygame
 pygame.init()
@@ -9,7 +8,7 @@ pygame.init()
 # Configurações da tela
 SCREEN_WIDTH, SCREEN_HEIGHT = 1200, 600
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("Labirinto Florestal")
+pygame.display.set_caption("Em Busca do Burrito")
 
 movement_area = pygame.Rect(100, 100, 1100, 400)
 
@@ -22,6 +21,29 @@ player_speed = 5
 player_width, player_height = 40,75  # Tamanho fixo do jogador
 font = pygame.font.Font(None, 36)
 clock = pygame.time.Clock() 
+
+# Cores
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GRAY = (200, 200, 200)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+
+db = sqlite3.connect("ranking.db")
+cursor = db.cursor()
+
+# Cria a tabela se não existir
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS ranking (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_name TEXT,
+    time INTEGER
+)
+""")
+db.commit()
+
+#cursor.execute("DELETE FROM ranking")
+#db.commit()
 
 # Carrega os assets para cada fase
 assets = {
@@ -73,14 +95,14 @@ phases = [
             pygame.Rect(230, 250, 85, 100),
             pygame.Rect(380, 310, 85, 100),
             pygame.Rect(555, 360, 85, 100),
-            pygame.Rect(670, 150, 85, 100),
+            pygame.Rect(630, 150, 85, 100),
             pygame.Rect(850, 240, 85, 100),
             pygame.Rect(950, 340, 85, 100),
         ],
         "bonus_points": [
             pygame.Rect(150, 300, 20, 20),
-            pygame.Rect(450, 350, 20, 20),
-            pygame.Rect(750, 250, 20, 20),
+            pygame.Rect(450, 150, 20, 20),
+            pygame.Rect(750, 290, 20, 20),
         ],
     },
     {  # Fase 3
@@ -112,6 +134,57 @@ score = 0
 time_start = pygame.time.get_ticks()
 random_obstacle = None
 random_obstacle_hidden_until = 0
+show_hitboxes = False
+game_over = False
+player_name = None
+
+# Funções auxiliares
+def get_player_name():
+    """Exibe uma tela para o jogador inserir seu nome."""
+    global player_name
+    if player_name:  # Se o nome já estiver definido, retorne-o diretamente
+        return player_name
+
+    input_active = True
+    player_name = ""
+    while input_active:
+        screen.fill(BLACK)
+        draw_text("Digite seu nome:", SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2 - 100, WHITE, 36)
+        pygame.draw.rect(screen, WHITE, (SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2, 300, 50), 2)
+        draw_text(player_name, SCREEN_WIDTH // 2 - 140, SCREEN_HEIGHT // 2 + 10, WHITE, 36)
+        draw_text("Pressione ENTER para confirmar", SCREEN_WIDTH // 2 - 200, SCREEN_HEIGHT // 2 + 100, GRAY, 24)
+        pygame.display.flip()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                quit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN and player_name.strip():
+                    input_active = False
+                elif event.key == pygame.K_BACKSPACE:
+                    player_name = player_name[:-1]
+                elif len(player_name) < 20:  # Limitar o nome a 20 caracteres
+                    player_name += event.unicode
+
+    player_name = player_name.strip()
+    return player_name  # Retornar o nome sem espaços adicionais
+
+def save_score(player_name, time):
+    """Salva a pontuação no banco de dados."""
+    cursor.execute("INSERT INTO ranking (player_name, time) VALUES (?, ?)", (player_name, time))
+    db.commit()
+
+def get_ranking():
+    """Busca o ranking do banco de dados, ordenado por tempo."""
+    cursor.execute("SELECT player_name, time FROM ranking ORDER BY time ASC LIMIT 10")
+    return cursor.fetchall()
+
+def draw_text(text, x, y, color=WHITE, font_size=36):
+    font = pygame.font.Font(None, font_size)
+    rendered_text = font.render(text, True, color)
+    text_rect = rendered_text.get_rect(midtop=(x + rendered_text.get_width() // 2, y))
+    screen.blit(rendered_text, (x, y))
 
 # Função para carregar a fase atual
 def load_phase(phase):
@@ -138,6 +211,137 @@ def load_phase(phase):
         70
     )
 
+def reset_game():
+    """Reinicia as variáveis do jogo para começar do zero."""
+    global current_phase, score, time_start, game_over, player_x, player_y, bonus_points, player_name, game_data, copia_bonus_points
+    
+    # Redefinir dados do jogador
+    player_name = None  # Redefine o nome do jogador para None ou estado inicial
+    
+    # Reiniciar progresso do jogo
+    current_phase = 1  # Reinicia na primeira fase
+    score = 0  # Zera a pontuação
+    bonus_points = 0  # Remove todos os pontos de bônus
+    
+    # Redefinir estado do jogo
+    game_over = False  # Define o jogo como ativo
+    time_start = pygame.time.get_ticks()  # Reinicia o contador de tempo
+
+    # Reiniciar pontos bônus
+    resetar_bonus()
+    
+    # Reposicionar o jogador (ajustar para posição inicial do jogo)
+    player_x = 0  # Posição inicial X do jogador
+    player_y = 0  # Posição inicial Y do jogador
+    
+    # Limpar dados temporários ou globais adicionais se necessário
+    game_data = {}  # Se houver dados armazenados temporariamente, redefina
+    
+    # Recarregar a fase inicial
+    load_phase(current_phase)  # Função para carregar a fase 1
+
+# Função para exibir a tela inicial
+def show_start_screen():
+    start_running = True
+    global player_name
+    while start_running:
+        screen.fill(BLACK)
+        draw_text("Em Busca do Burrito", SCREEN_WIDTH // 2 - 200, 100, WHITE, 50)
+        draw_text("1 - Jogar", SCREEN_WIDTH // 2 - 100, 200, WHITE)
+        draw_text("2 - Ranking", SCREEN_WIDTH // 2 - 100, 300, WHITE)
+        draw_text("3 - Sair", SCREEN_WIDTH // 2 - 100, 400, WHITE)
+        pygame.display.flip()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                quit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_1:
+                    reset_game()
+                    start_running = False
+                elif event.key == pygame.K_2:
+                    show_ranking_screen()
+                elif event.key == pygame.K_3:
+                    pygame.quit()
+                    quit()
+
+def show_ranking_screen():
+    screen.fill(BLACK)
+    draw_text("Ranking", SCREEN_WIDTH // 2 - 100, 100, WHITE, 50)
+    rankings = get_ranking()
+
+    y_offset = 200
+    for idx, (name, time) in enumerate(rankings):
+        draw_text(f"{idx + 1}. {name} - {time}s", SCREEN_WIDTH // 2 - 100, y_offset, WHITE, 36)
+        y_offset += 40
+
+    pygame.display.flip()
+
+    # Espera até que o jogador pressione ESC ou veja o ranking por 5 segundos
+    ranking_screen_running = True
+    while ranking_screen_running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                quit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:  # Se pressionar ESC, retorna para a tela inicial
+                    ranking_screen_running = False
+                    show_start_screen()  # Exibe a tela inicial novamente
+
+def show_game_over_screen():
+    global game_over, running, score, current_phase
+    while game_over:
+        screen.fill(RED)
+        draw_text("GAME OVER", SCREEN_WIDTH // 2 - 150, SCREEN_HEIGHT // 2 - 50, BLACK, 80)
+        draw_text("Pressione ESC para sair ou R para reiniciar", SCREEN_WIDTH // 2 - 300, SCREEN_HEIGHT // 2 + 50, BLACK, 30)
+        pygame.display.flip()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                quit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    pygame.quit()
+                    quit()
+                if event.key == pygame.K_r:
+                    reset_game()
+                    game_over = False
+
+def Mostrarbonus():
+    global random_obstacle_hidden_until, score
+    # Verificação de colisão com pontos bônus
+    for bonus in bonus_points[:]:  # Usar uma cópia da lista para evitar problemas ao remover elementos
+        if player_hitbox.colliderect(bonus):
+            score += 20
+            bonus_points.remove(bonus)
+            random_obstacle_hidden_until = current_time + 3
+
+def resetar_bonus():
+    for i, fase in enumerate(phases):
+        if i == 0:
+            fase["bonus_points"] = [
+                pygame.Rect(150, 150, 20, 20), 
+                pygame.Rect(670, 200, 20, 20)
+            ]
+        elif i == 1:
+            fase["bonus_points"] = [
+                pygame.Rect(150, 300, 20, 20),
+                pygame.Rect(450, 150, 20, 20),
+                pygame.Rect(750, 290, 20, 20),
+            ]
+        elif i == 2:
+            fase["bonus_points"] = [
+                pygame.Rect(200, 200, 20, 20),
+                pygame.Rect(500, 150, 20, 20),
+                pygame.Rect(800, 250, 20, 20),
+            ]
+
+# Inicializa a tela inicial
+show_start_screen()
+reset_game()
 # Carrega a primeira fase
 load_phase(current_phase)
 
@@ -186,8 +390,8 @@ while running:
     # Verificação de colisão com obstáculos fixos
     # Dicionário para ajustes de hitbox por fase
     hitbox_adjustments = {
-        1: (10, 10, 19, 20),  # Ajustes para fase 1 (x_offset, y_offset, width_reduction, height_reduction)
-        2: (0, 10, 0, 33),  # Ajustes para fase 2
+        1: (15, 15, 30, 30),  # Ajustes para fase 1 (x_offset, y_offset, width_reduction, height_reduction)
+        2: (5, 15, 10, 40),  # Ajustes para fase 2
         3: (3, 35, 0, 73),   # Ajustes para fase 3
     }
 
@@ -234,32 +438,77 @@ while running:
 
     if current_time > random_obstacle_hidden_until:
         if player_hitbox.colliderect(reduced_random_hitbox):
-            print("Você colidiu com o obstáculo aleatório! Jogo reiniciado.")
-            score = 0
+            score -= 50
             current_phase = 1
             load_phase(current_phase)
 
         # Desenhar obstáculo aleatório
         screen.blit(random_obstacle_img, (random_obstacle.x, random_obstacle.y))
 
-    # Verificação de colisão com pontos bônus
-    for bonus in bonus_points[:]:  # Usar uma cópia da lista para evitar problemas ao remover elementos
-        if player_hitbox.colliderect(bonus):
-            score += 20
-            bonus_points.remove(bonus)
-            random_obstacle_hidden_until = current_time + 5
+    Mostrarbonus()
 
     # Verifica se o jogador chegou ao objetivo
     if pygame.Rect(player_x, player_y, player_width, player_height).colliderect(goal):
         score += 100
-        print(f"Parabéns! Fase {current_phase} concluída.")
 
         if current_phase < len(phases):
             current_phase += 1
             load_phase(current_phase)
         else:
-            print("Parabéns! Você completou o jogo!")
-            running = False
+            elapsed_time = (pygame.time.get_ticks() - time_start) // 1000
+    
+            # Exibir tela para inserir o nome do jogador
+            player_name = get_player_name()
+            
+            # Salvar o nome e tempo no banco de dados
+            save_score(player_name, elapsed_time)
+            
+            # Exibir mensagem de conclusão e redirecionar para o ranking
+            ranking_screen_active = True
+            while ranking_screen_active:
+                screen.fill(BLACK)
+                draw_text("Parabéns, você completou o jogo!", SCREEN_WIDTH // 2 - 250, SCREEN_HEIGHT // 2 - 100, WHITE, 40)
+                draw_text(f"Tempo final: {elapsed_time}s", SCREEN_WIDTH // 2 - 200, SCREEN_HEIGHT // 2, WHITE, 36)
+                draw_text("Pressione Enter para ver o ranking", SCREEN_WIDTH // 2 - 250, SCREEN_HEIGHT // 2 + 100, GRAY, 24)
+                pygame.display.flip()
+
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        pygame.quit()
+                        quit()
+                    if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+                        ranking_screen_active = False
+                        show_ranking_screen()  # Exibe a tela de ranking
+
+    if show_hitboxes:
+        # Desenhar hitbox do jogador
+        player_hitbox = pygame.Rect(player_x + player_hitbox_x_offset, player_y + player_hitbox_y_offset, player_hitbox_width, player_hitbox_height)
+        pygame.draw.rect(screen, (0, 0, 255), player_hitbox, 2)
+
+        # Desenhar hitboxes dos obstáculos fixos
+        for obstacle in obstacles:
+            # Reaplicar os ajustes usados para colisão
+            x_offset, y_offset, width_reduction, height_reduction = hitbox_adjustments[current_phase]
+            adjusted_hitbox = pygame.Rect(
+                obstacle.x + x_offset,
+                obstacle.y + y_offset,
+                obstacle.width - width_reduction,
+                obstacle.height - height_reduction
+            )
+            pygame.draw.rect(screen, (255, 0, 0), adjusted_hitbox, 2)  # Vermelho para hitboxes ajustadas
+
+        # Desenhar hitbox do obstáculo aleatório
+        reduced_random_hitbox = pygame.Rect(
+            random_obstacle.x + 5,
+            random_obstacle.y + 5,
+            random_obstacle.width - 10,
+            random_obstacle.height - 10
+        )
+        pygame.draw.rect(screen, (0, 255, 0), reduced_random_hitbox, 2)
+
+    if score <= -100:
+        game_over = True
+        show_game_over_screen()
 
     # Atualização da tela
     pygame.display.flip()
